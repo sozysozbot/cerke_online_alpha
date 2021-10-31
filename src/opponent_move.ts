@@ -25,7 +25,7 @@ import {
   PIECE_SIZE,
 } from "./html_top_left";
 import {
-  animatePunishStepTamAndCheckPerzej,
+  animateStepTamScoreReductionAndCheckPerzej,
   calculateHandsAndScore,
   sendStuffTo,
   endSeason,
@@ -89,7 +89,9 @@ type OpponentMove =
     }>;
   };
 
-export async function animateOpponentSrcStepDstFinite(p: SrcStepDstFinite): Promise<CaptureInfo> {
+export async function animateOpponentSrcStepDstFinite(p: SrcStepDstFinite): Promise<
+  { perzej_happened: false, capture_info: CaptureInfo } | { perzej_happened: true }
+> {
   return await animateOpponentSrcStepDstFinite_(
     fromAbsoluteCoord(p.src),
     fromAbsoluteCoord(p.step),
@@ -144,11 +146,13 @@ export async function animateOpponentInfAfterStep(p: {
     water_entry_ciurl?: Ciurl;
     thwarted_by_failing_water_entry_ciurl: Ciurl | null;
   }>;
-}): Promise<[{
-  dest: AbsoluteCoord;
-  water_entry_ciurl?: Ciurl;
-  thwarted_by_failing_water_entry_ciurl: Ciurl | null;
-}, CaptureInfo]> {
+}): Promise<{ perzej_happened: true } | {
+  perzej_happened: false, o: [{
+    dest: AbsoluteCoord;
+    water_entry_ciurl?: Ciurl;
+    thwarted_by_failing_water_entry_ciurl: Ciurl | null;
+  }, CaptureInfo]
+}> {
   const [src_i, src_j] = p.src;
   const [step_i, step_j] = p.step;
 
@@ -165,7 +169,26 @@ export async function animateOpponentInfAfterStep(p: {
 
   if (stepPiece === "Tam2") {
     await animateStepTamLogo();
-    await animatePunishStepTamAndCheckPerzej(Side.Downward);
+    const { perzej_happened } = await animateStepTamScoreReductionAndCheckPerzej(Side.Downward);
+
+    // 点が尽きてゲームが異常終了したので、graceful に試合を終わらせなきゃいけない
+    if (perzej_happened) {
+
+      // src から step への移動がまだ済んでないので、一応やっておかなきゃいけない
+      const srcNode: HTMLElement = document.getElementById(
+        `field_piece_${src_i}_${src_j}`,
+      )!;
+      await animateNode(
+        srcNode,
+        750 * 0.8093,
+        {
+          to: coordToPieceXY_Shifted(p.step),
+          from: coordToPieceXY(p.src)
+        },
+      );
+      await new Promise(resolve => setTimeout(resolve, 300 * 0.8093));
+      return { perzej_happened: true };
+    }
   }
 
   const srcNode: HTMLElement = document.getElementById(
@@ -235,7 +258,9 @@ export async function animateOpponentInfAfterStep(p: {
         drawField({ focus: [src_i, src_j] });
 
         // no piece capture is possible if water entry has failed
-        return [result, null];
+        return {
+          perzej_happened: false, o: [result, null]
+        };
       }
     }
 
@@ -249,7 +274,9 @@ export async function animateOpponentInfAfterStep(p: {
     console.log("drawField opponent #", 13);
     GAME_STATE.last_move_focus = [dest_i, dest_j];
     drawField({ focus: [dest_i, dest_j] });
-    return [result, toColorProf(destPiece)];
+    return {
+      perzej_happened: false, o: [result, toColorProf(destPiece)]
+    };
   } else {
     // no piece capture; in this branch, either self-occlusion is happening or else destPiece is null.
     await animateNode(
@@ -270,7 +297,9 @@ export async function animateOpponentInfAfterStep(p: {
         console.log("drawField opponent #", 14);
         GAME_STATE.last_move_focus = [src_i, src_j];
         drawField({ focus: [src_i, src_j] });
-        return [result, null]; // no piece capture; in this branch, either self-occlusion is happening or else destPiece is null.
+        return {
+          perzej_happened: false, o: [result, null]
+        }; // no piece capture; in this branch, either self-occlusion is happening or else destPiece is null.
       }
     } else if (result.thwarted_by_failing_water_entry_ciurl) {
       await animateWaterEntryLogo();
@@ -280,7 +309,9 @@ export async function animateOpponentInfAfterStep(p: {
       console.log("drawField opponent #", 14);
       GAME_STATE.last_move_focus = [src_i, src_j];
       drawField({ focus: [src_i, src_j] });
-      return [result, null]; // no piece capture; in this branch, either self-occlusion is happening or else destPiece is null.
+      return {
+        perzej_happened: false, o: [result, null]
+      }; // no piece capture; in this branch, either self-occlusion is happening or else destPiece is null.
     }
 
     if (!coordEq(p.src, dest)) {
@@ -290,7 +321,9 @@ export async function animateOpponentInfAfterStep(p: {
     console.log("drawField opponent #", 15);
     GAME_STATE.last_move_focus = [dest_i, dest_j];
     drawField({ focus: [dest_i, dest_j] });
-    return [result, null]; // no piece capture; in this branch, either self-occlusion is happening or else destPiece is null.
+    return {
+      perzej_happened: false, o: [result, null]
+    }; // no piece capture; in this branch, either self-occlusion is happening or else destPiece is null.
   }
 }
 
@@ -418,7 +451,9 @@ async function animateOpponentSrcStepDstFinite_(
   step: Coord,
   dest: Coord,
   water_entry_ciurl?: Ciurl,
-): Promise<CaptureInfo> {
+): Promise<
+  { perzej_happened: false, capture_info: CaptureInfo } | { perzej_happened: true }
+> {
   const [src_i, src_j] = src;
   const [step_i, step_j] = step;
   const [dest_i, dest_j] = dest;
@@ -436,7 +471,26 @@ async function animateOpponentSrcStepDstFinite_(
 
   if (stepPiece === "Tam2") {
     await animateStepTamLogo();
-    await animatePunishStepTamAndCheckPerzej(Side.Downward);
+    const { perzej_happened } = await animateStepTamScoreReductionAndCheckPerzej(Side.Downward);
+
+    // must end gracefully
+    if (perzej_happened) {
+
+      // depict `src → step` 
+      const srcNode: HTMLElement = document.getElementById(
+        `field_piece_${src_i}_${src_j}`,
+      )!;
+      await animateNode(
+        srcNode,
+        750 * 0.8093,
+        {
+          to: coordToPieceXY_Shifted(step),
+          from: coordToPieceXY(src)
+        },
+      );
+
+      return { perzej_happened: true };
+    }
   }
 
   const destPiece: Piece | null = GAME_STATE.f.currentBoard[dest_i][dest_j];
@@ -494,7 +548,7 @@ async function animateOpponentSrcStepDstFinite_(
         drawField({ focus: [src_i, src_j] });
 
         // no piece capture is possible if water entry failed
-        return null;
+        return { perzej_happened: false, capture_info: null };
       }
     }
 
@@ -507,7 +561,7 @@ async function animateOpponentSrcStepDstFinite_(
     console.log("drawField opponent #", 17);
     GAME_STATE.last_move_focus = [dest_i, dest_j];
     drawField({ focus: [dest_i, dest_j] });
-    return coordEq(src, dest) ? null : toColorProf(destPiece);
+    return { perzej_happened: false, capture_info: coordEq(src, dest) ? null : toColorProf(destPiece) };
   } else {
     const imgNode: HTMLElement = document.getElementById(
       `field_piece_${src_i}_${src_j}`,
@@ -543,7 +597,7 @@ async function animateOpponentSrcStepDstFinite_(
         GAME_STATE.last_move_focus = [src_i, src_j];
         drawField({ focus: [src_i, src_j] });
         // no piece capture is possible if water entry failed
-        return null;
+        return { perzej_happened: false, capture_info: null };
       }
     }
 
@@ -556,7 +610,7 @@ async function animateOpponentSrcStepDstFinite_(
     GAME_STATE.last_move_focus = [dest_i, dest_j];
     drawField({ focus: [dest_i, dest_j] });
 
-    return coordEq(src, dest) ? null : toColorProf(destPiece);
+    return { perzej_happened: false, capture_info: coordEq(src, dest) ? null : toColorProf(destPiece) };
   }
 }
 

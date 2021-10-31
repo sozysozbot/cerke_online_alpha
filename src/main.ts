@@ -182,19 +182,28 @@ export async function sendMainPoll() {
         KIAR_ARK.body = [...KIAR_ARK.body, { type: "movement", dat: normalMessageToKiarArk(opponent_move) }]
       } else if (opponent_move.data.type === "SrcStepDstFinite") {
         const maybe_capture = await animateOpponentSrcStepDstFinite(opponent_move.data);
-        GAME_STATE.is_my_turn = true;
-        if (opponent_move.data.water_entry_ciurl) {
-          KIAR_ARK.body = [...KIAR_ARK.body, {
-            type: "movement",
-            dat: normalMessageToKiarArk(opponent_move, opponent_move.data.water_entry_ciurl.filter(a => a).length),
-            piece_capture_comment: toPieceCaptureComment(maybe_capture)
-          }]
-        } else {
+        if (maybe_capture.perzej_happened) {
+          // 一応棋譜に書いておかなきゃいかん
           KIAR_ARK.body = [...KIAR_ARK.body, {
             type: "movement",
             dat: normalMessageToKiarArk(opponent_move),
-            piece_capture_comment: toPieceCaptureComment(maybe_capture)
-          }]
+            piece_capture_comment: "撃皇即値行無"
+          }];
+        } else {
+          GAME_STATE.is_my_turn = true;
+          if (opponent_move.data.water_entry_ciurl) {
+            KIAR_ARK.body = [...KIAR_ARK.body, {
+              type: "movement",
+              dat: normalMessageToKiarArk(opponent_move, opponent_move.data.water_entry_ciurl.filter(a => a).length),
+              piece_capture_comment: toPieceCaptureComment(maybe_capture.capture_info)
+            }]
+          } else {
+            KIAR_ARK.body = [...KIAR_ARK.body, {
+              type: "movement",
+              dat: normalMessageToKiarArk(opponent_move),
+              piece_capture_comment: toPieceCaptureComment(maybe_capture.capture_info)
+            }]
+          }
         }
       } else {
         const a: never = opponent_move.data;
@@ -270,11 +279,13 @@ export async function sendMainPoll() {
           return Promise.resolve(opponent_move.finalResult);
         }
       })();
-      const [finalResult_resolved, maybe_capture]: ([{
-        dest: AbsoluteCoord;
-        water_entry_ciurl?: Ciurl;
-        thwarted_by_failing_water_entry_ciurl: Ciurl | null;
-      }, CaptureInfo]) = await animateOpponentInfAfterStep({
+      const res: ({ perzej_happened: true } | {
+        perzej_happened: false, o: [{
+          dest: AbsoluteCoord;
+          water_entry_ciurl?: Ciurl;
+          thwarted_by_failing_water_entry_ciurl: Ciurl | null;
+        }, CaptureInfo]
+      }) = await animateOpponentInfAfterStep({
         src: fromAbsoluteCoord(opponent_move.src),
         step: fromAbsoluteCoord(opponent_move.step),
         plannedDirection: fromAbsoluteCoord(opponent_move.plannedDirection),
@@ -282,6 +293,21 @@ export async function sendMainPoll() {
         finalResult,
       });
       GAME_STATE.is_my_turn = true;
+
+      // perzej happened; must finish gracefully
+      if (res.perzej_happened) {
+        KIAR_ARK.body = [...KIAR_ARK.body, {
+          type: "movement",
+          dat: `${serializeAbsoluteCoord(opponent_move.src)}片${serializeAbsoluteCoord(opponent_move.step)}...`,
+          piece_capture_comment: "撃皇即値行無"
+        }];
+        return;
+      }
+      const [finalResult_resolved, maybe_capture]: [{
+        dest: AbsoluteCoord;
+        water_entry_ciurl?: Ciurl;
+        thwarted_by_failing_water_entry_ciurl: Ciurl | null;
+      }, CaptureInfo] = res.o;
 
       if (finalResult_resolved.water_entry_ciurl) {
         if (finalResult_resolved.water_entry_ciurl.filter(a => a).length < 3) {
@@ -882,7 +908,7 @@ function normalMessageToKiarArk(message: NormalMove, water_ciurl_count?: number)
   }
 }
 
-async function sendNormalMessage(message: NormalMove) {
+async function sendNormalMessage(message: NormalMove, o?: { perzej_happened: boolean }) {
   const res: Ret_NormalMove = await sendStuff<NormalMove, Ret_NormalMove>(
     "normal move",
     message,
@@ -908,7 +934,7 @@ async function sendNormalMessage(message: NormalMove) {
     KIAR_ARK.body = [...KIAR_ARK.body, {
       type: "movement",
       dat: normalMessageToKiarArk(message),
-      piece_capture_comment: toPieceCaptureComment(maybe_capture)
+      piece_capture_comment: o?.perzej_happened ? "撃皇即値行無" : toPieceCaptureComment(maybe_capture)
     }];
     return;
   }
@@ -1371,8 +1397,8 @@ function getThingsGoingAfterStepping_Finite(
   } else {
     (async () => {
       await animateStepTamLogo();
-      await animatePunishStepTamAndCheckPerzej(Side.Upward);
-      await sendNormalMessage(message);
+      const { perzej_happened } = await animateStepTamScoreReductionAndCheckPerzej(Side.Upward);
+      await sendNormalMessage(message, { perzej_happened });
     })();
   }
   return;
@@ -1406,6 +1432,9 @@ function filterInOneDirectionTillCiurlLimit(
   });
 }
 
+/// Since this function is only called as an event handler triggered when the image is clicked, 
+/// there is no need to send { perzej_happened: boolean } back to the upper level
+/// この関数は画像をクリックしたときのイベントハンドラとしてしか呼ばれないので、{ perzej_happened: boolean } を上位に送り返す必要がない
 async function sendInfAfterStep(message: InfAfterStep, o: { color: Color, prof: Profession }) {
   const res = await sendStuff<InfAfterStep, Ret_InfAfterStep>(
     "inf after step",
@@ -1423,7 +1452,15 @@ async function sendInfAfterStep(message: InfAfterStep, o: { color: Color, prof: 
 
   if (isTamAt(fromAbsoluteCoord(message.step))) {
     await animateStepTamLogo();
-    await animatePunishStepTamAndCheckPerzej(Side.Upward);
+    const { perzej_happened } = await animateStepTamScoreReductionAndCheckPerzej(Side.Upward);
+
+    // 点が尽きてゲームが異常終了したので、graceful に試合を終わらせなきゃいけない
+    if (perzej_happened) {
+      document.getElementById("cancelButton")!.remove(); // destroy the cancel button, since it can no longer be cancelled
+      eraseGuide(); // this removes the central guide, as well as the yellow and green ones
+
+      return;
+    }
   }
 
   drawCiurlWithAudio(res.ciurl);
@@ -1565,7 +1602,7 @@ function display_guides_after_stepping(
     ) {
       const [i, j] = list[ind];
       const destPiece = GAME_STATE.f.currentBoard[i][j];
-      
+
       // If it is protected, display the fact that it is protected
       // Why should a piece belonging to an opponent (Side.Downward) give false for `canGetOccupiedBy`?
       // it is because of tam2 hue a uai1
@@ -1895,7 +1932,7 @@ function perzej(
   KIAR_ARK.header = [...KIAR_ARK.header, { type: "header", dat: `{終時:${(new Date()).toISOString()}}` }];
 }
 
-export async function animatePunishStepTamAndCheckPerzej(side: Side) {
+export async function animateStepTamScoreReductionAndCheckPerzej(side: Side): Promise<{ perzej_happened: boolean }> {
   const score_display = document.getElementById("score_display")!;
   score_display.classList.add("nocover");
   // the score display has ended; move the yaku_all back to `left: 750px`
@@ -1921,13 +1958,13 @@ export async function animatePunishStepTamAndCheckPerzej(side: Side) {
     document
       .getElementById("protective_cover_over_field_while_waiting_for_opponent")
       ?.classList.remove("nocover");
-    return;
+    return { perzej_happened: true };
   } else if (GAME_STATE.my_score <= 0) {
     perzej("you lose...", true);
     document
       .getElementById("protective_cover_over_field_while_waiting_for_opponent")
       ?.classList.remove("nocover");
-    return;
+    return { perzej_happened: true };
   }
   await new Promise(resolve => setTimeout(resolve, 300 * 0.8093));
   drawMak2Io1();
@@ -1943,6 +1980,7 @@ export async function animatePunishStepTamAndCheckPerzej(side: Side) {
   document
     .getElementById("protective_cover_over_field_while_asyncawait")
     ?.classList.add("nocover");
+  return { perzej_happened: false };
 }
 
 export function endSeason(
