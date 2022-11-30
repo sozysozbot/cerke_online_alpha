@@ -23,14 +23,26 @@
         <a href="friend_make_room.html"><img src="entrance_image/ja/friend.png" id="friend_button"></a>
         <div id="blog_link_container"><a href="blog.html" id="blog_link">更新履歴</a></div>
         <div id="lang_selector_container">
-            <select id="lang_selector" name="lang_selector" onchange="location.href = `entrance.html?lang=${this.value}`">
+            <select id="lang_selector" name="lang_selector" onchange="location.href = `entrance.html?lang=${encodeURIComponent(this.value)}`">
             </select>
         </div>
     </div>
 </div>
 <script>
     const raw_lang = new URLSearchParams(new URL(location.href).search).get("lang");
-    const lang =  ["x-faikleone", "ja"].includes(raw_lang) ? raw_lang : "ja";
+
+    // Originally written as 
+    // ["x-faikleone", "ja"].includes(raw_lang) ? raw_lang : "ja"
+    // but since CodeQL cannot understand that this is safe and gives out an alert,
+    // (private url: https://github.com/jurliyuuri/cerke_online_alpha/security/code-scanning/3 )
+    // I will instead write it in a lame way.
+
+    // もともとは
+    // ["x-faikleone", "ja"].includes(raw_lang) ? raw_lang : "ja"
+    // としていたが、これが安全であるということを CodeQL は見抜けず、警告を出すので
+    // (private url: https://github.com/jurliyuuri/cerke_online_alpha/security/code-scanning/3 )
+    // こういうダサい書き方に書き換えておく
+    const lang = raw_lang === "ja" ? "ja" : raw_lang === "x-faikleone" ? "x-faikleone" : "ja";
     sessionStorage.lang = lang;
 
     const link = document.getElementById("blog_link");
